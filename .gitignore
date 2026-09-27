@@ -1,0 +1,23 @@
+# Dependencies and build outputs
+node_modules/
+bin/
+obj/
+dist/
+build/
+
+# Local environment variables
+.env
+.env.*
+!.env.example
+
+# Local backend settings
+appsettings.Development.json
+appsettings.Local.json
+
+# IDE files
+.vs/
+*.user
+*.suo
+
+# Logs
+*.log
