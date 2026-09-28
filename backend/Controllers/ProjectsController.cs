@@ -1,159 +1,44 @@
-using backend.Models;
 using backend.Contracts;
+using backend.Models;
+using backend.Repositories;
 using Microsoft.AspNetCore.Mvc;
-
 namespace backend.Controllers;
-
-[ApiController]
-[Route("api/projects")]
-public class ProjectsController : ControllerBase
+[ApiController, Route("api/projects")]
+public class ProjectsController(ProjectRepository projects, UserRepository users, TaskRepository tasks) : ControllerBase
 {
-    // Temporary storage. Will be replaced with a database.
-    private static readonly List<Project> Projects = new();
-
-    // GET /api/projects
-    // Optional filter: projects that include a specific user.
-    [HttpGet]
-    public IActionResult GetProjects([FromQuery] Guid? memberId)
-    {
-        IEnumerable<Project> result = Projects;
-
-        if (memberId.HasValue)
-        {
-            result = result.Where(
-                project => project.MemberIds.Contains(memberId.Value));
-        }
-
-        return Ok(result.ToList());
-    }
-
-    // GET /api/projects/{id}
-    [HttpGet("{id}")]
-    public IActionResult GetProjectById([FromRoute] Guid id)
-    {
-        Project? project = Projects.FirstOrDefault(
-            p => p.ProjectId == id);
-
-        if (project == null)
-        {
-            return NotFound("Project not found.");
-        }
-
-        return Ok(project);
-    }
-
-    // POST /api/projects
+    [HttpGet] public async Task<IActionResult> All([FromQuery] Guid? memberId) => Ok(await projects.All(memberId));
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> Get(Guid id) =>
+        await projects.Get(id) is { } project ? Ok(project) : NotFound("Project not found.");
     [HttpPost]
-    public IActionResult CreateProject(
-        [FromBody] CreateProjectRequest request)
+    public async Task<IActionResult> Create(CreateProjectRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.ProjectName) ||
-            string.IsNullOrWhiteSpace(request.CourseName))
-        {
-            return BadRequest(
-                "Project name and course name are required.");
-        }
-
-        if (request.CreatorId == Guid.Empty)
-        {
-            return BadRequest("Creator ID is required.");
-        }
-
-        // TODO: Check that the creator exists.
-
-        Project project = new Project(
-            projectName: request.ProjectName.Trim(),
-            courseName: request.CourseName.Trim(),
-            description: request.Description,
-            deadline: request.Deadline);
-
-        // Add the creator as the first member.
-        project.MemberIds.Add(request.CreatorId);
-
-        Projects.Add(project);
-
-        return CreatedAtAction(
-            nameof(GetProjectById),
-            new { id = project.ProjectId },
-            project);
+        if (string.IsNullOrWhiteSpace(request.ProjectName) || string.IsNullOrWhiteSpace(request.CourseName))
+            return BadRequest("Project and course names are required.");
+        if (await users.Get(request.CreatorId) is null) return BadRequest("Creator does not exist.");
+        var project = new Project { ProjectName = request.ProjectName.Trim(),
+            CourseName = request.CourseName.Trim(), Description = request.Description,
+            Deadline = request.Deadline, MemberIds = new() { request.CreatorId } };
+        await projects.Add(project);
+        return CreatedAtAction(nameof(Get), new { id = project.ProjectId }, project);
     }
-
-    // PUT /api/projects/{id}/details
-    // Replace the editable project details.
-    [HttpPut("{id}/details")]
-    public IActionResult UpdateProject(
-        [FromRoute] Guid id,
-        [FromBody] UpdateProjectRequest request)
+    [HttpPut("{id:guid}/details")]
+    public async Task<IActionResult> Update(Guid id, UpdateProjectRequest request) =>
+        await projects.Update(id, request.Description, request.Deadline) is { } project
+            ? Ok(project) : NotFound("Project not found.");
+    [HttpPost("{id:guid}/members")]
+    public async Task<IActionResult> AddMember(Guid id, AddProjectMemberRequest request)
     {
-        Project? project = Projects.FirstOrDefault(
-            p => p.ProjectId == id);
-
-        if (project == null)
-        {
-            return NotFound("Project not found.");
-        }
-
-        project.Description = request.Description;
-        project.Deadline = request.Deadline;
-
-        return Ok(project);
+        if (await projects.Get(id) is null) return NotFound("Project not found.");
+        if (await users.Get(request.UserId) is null) return BadRequest("User does not exist.");
+        var project = await projects.AddMember(id, request.UserId);
+        return project is null ? Conflict("Already a member.") : Ok(project);
     }
-
-    // POST /api/projects/{id}/members
-    [HttpPost("{id}/members")]
-    public IActionResult AddMember(
-        [FromRoute] Guid id,
-        [FromBody] AddProjectMemberRequest request)
+    [HttpDelete("{id:guid}/members/{userId:guid}")]
+    public async Task<IActionResult> RemoveMember(Guid id, Guid userId)
     {
-        Project? project = Projects.FirstOrDefault(
-            p => p.ProjectId == id);
-
-        if (project == null)
-        {
-            return NotFound("Project not found.");
-        }
-
-        if (request.UserId == Guid.Empty)
-        {
-            return BadRequest("User ID is required.");
-        }
-
-        // TODO: Check that the user exists.
-
-        if (project.MemberIds.Contains(request.UserId))
-        {
-            return Conflict("User is already a project member.");
-        }
-
-        project.MemberIds.Add(request.UserId);
-
-        return Ok(project);
-    }
-
-    // DELETE /api/projects/{id}/members/{userId}
-    [HttpDelete("{id}/members/{userId}")]
-    public IActionResult RemoveMember(
-        [FromRoute] Guid id,
-        [FromRoute] Guid userId)
-    {
-        Project? project = Projects.FirstOrDefault(
-            p => p.ProjectId == id);
-
-        if (project == null)
-        {
-            return NotFound("Project not found.");
-        }
-
-        if (!project.MemberIds.Contains(userId))
-        {
-            return NotFound("User is not a project member.");
-        }
-
-        // TODO: Handle assigned tasks and assignment requests
-        // before allowing a member to leave the project.
-
-        project.MemberIds.Remove(userId);
-
-        return NoContent();
+        if (await projects.Get(id) is null) return NotFound("Project not found.");
+        if (await tasks.HasMemberWork(id, userId)) return Conflict("Reassign tasks and clear requests first.");
+        return await projects.RemoveMember(id, userId) is null ? NotFound("Member not found.") : NoContent();
     }
 }
