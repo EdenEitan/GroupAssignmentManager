@@ -1,290 +1,68 @@
-using backend.Models;
 using backend.Contracts;
+using backend.Models;
+using backend.Repositories;
+using backend.Services;
 using Microsoft.AspNetCore.Mvc;
-
 namespace backend.Controllers;
-
-[ApiController]
-[Route("api/tasks")]
-public class TasksController : ControllerBase
+[ApiController, Route("api/tasks")]
+public class TasksController(TaskRepository tasks, ProjectRepository projects, TaskService service) : ControllerBase
 {
-    // Temporary storage. Will be replaced with a database.
-    private static readonly List<TaskItem> Tasks = new();
-
-    // GET /api/tasks
-    // Optional filters: projectId, assigneeId, unassignedOnly.
     [HttpGet]
-    public IActionResult GetTasks(
-        [FromQuery] Guid? projectId,
-        [FromQuery] Guid? assigneeId,
-        [FromQuery] bool unassignedOnly = false)
+    public async Task<IActionResult> All([FromQuery] Guid projectId, [FromQuery] Guid? assigneeId,
+        [FromQuery] bool unassignedOnly = false, [FromQuery] bool needsHelp = false, [FromQuery] string? status = null)
     {
-        if (unassignedOnly && assigneeId.HasValue)
-        {
-            return BadRequest(
-                "Choose either an assignee or unassigned tasks.");
-        }
-
-        IEnumerable<TaskItem> result = Tasks;
-
-        if (projectId.HasValue)
-        {
-            result = result.Where(
-                task => task.ProjectId == projectId.Value);
-        }
-
-        if (assigneeId.HasValue)
-        {
-            result = result.Where(
-                task => task.AssigneeId == assigneeId.Value);
-        }
-
-        if (unassignedOnly)
-        {
-            result = result.Where(
-                task => task.AssigneeId == null);
-        }
-
-        return Ok(result.ToList());
+        if (projectId == Guid.Empty) return BadRequest("projectId is required.");
+        if (unassignedOnly && assigneeId is not null) return BadRequest("Choose one assignee filter.");
+        var items = await tasks.All(projectId);
+        return Ok(items.Where(x => (assigneeId is null || x.AssigneeId == assigneeId)
+            && (!unassignedOnly || x.AssigneeId is null) && (!needsHelp || x.NeedsHelp)
+            && (status is null || x.Status == status)));
     }
-
-    // GET /api/tasks/{id}
-    [HttpGet("{id}")]
-    public IActionResult GetTaskById([FromRoute] Guid id)
-    {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        return Ok(task);
-    }
-
-    // POST /api/tasks
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> Get(Guid id) =>
+        await tasks.Get(id) is { } task ? Ok(task) : NotFound("Task not found.");
     [HttpPost]
-    public IActionResult CreateTask(
-        [FromBody] CreateTaskRequest request)
+    public async Task<IActionResult> Create(CreateTaskRequest request)
     {
-        if (request.ProjectId == Guid.Empty)
-        {
-            return BadRequest("Project ID is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.Title))
-        {
-            return BadRequest("Title is required.");
-        }
-
-        if (!IsValidPriority(request.Priority))
-        {
-            return BadRequest(
-                "Priority must be Low, Medium, or High.");
-        }
-
-        // TODO: Check that the project exists.
-
-        TaskItem task = new TaskItem(
-            projectId: request.ProjectId,
-            title: request.Title.Trim(),
-            priority: request.Priority,
-            description: request.Description,
-            deadline: request.Deadline);
-
-        Tasks.Add(task);
-
-        return CreatedAtAction(
-            nameof(GetTaskById),
-            new { id = task.Id },
-            task);
+        if (request.ProjectId == Guid.Empty || await projects.Get(request.ProjectId) is null)
+            return BadRequest("Project does not exist.");
+        if (string.IsNullOrWhiteSpace(request.Title) || !TaskService.ValidPriority(request.Priority))
+            return BadRequest("Provide a title and Low, Medium, or High priority.");
+        var task = new TaskItem { ProjectId = request.ProjectId, Title = request.Title.Trim(),
+            Description = request.Description, Deadline = request.Deadline, Priority = request.Priority };
+        await tasks.Add(task);
+        return CreatedAtAction(nameof(Get), new { id = task.Id }, task);
     }
-
-    // PUT /api/tasks/{id}
-    // Replace the editable task details.
-    [HttpPut("{id}")]
-    public IActionResult UpdateTask(
-        [FromRoute] Guid id,
-        [FromBody] UpdateTaskRequest request)
+    private IActionResult Respond(ChangeResult result) => result.Code switch
     {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.Title))
-        {
-            return BadRequest("Title is required.");
-        }
-
-        if (!IsValidPriority(request.Priority))
-        {
-            return BadRequest(
-                "Priority must be Low, Medium, or High.");
-        }
-
-        task.Title = request.Title.Trim();
-        task.Description = request.Description;
-        task.Deadline = request.Deadline;
-        task.Priority = request.Priority;
-
-        return Ok(task);
-    }
-
-    // POST /api/tasks/{id}/request-assignment
-    // Ask to take an unassigned task.
-    [HttpPost("{id}/request-assignment")]
-    public IActionResult RequestAssignment(
-        [FromRoute] Guid id,
-        [FromBody] RequestTaskAssignmentRequest request)
+        200 => Ok(result.Task),
+        404 => NotFound(result.Error),
+        409 => Conflict(result.Error),
+        _ => BadRequest(result.Error)
+    };
+    [HttpPut("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, UpdateTaskRequest request) =>
+        Respond(await service.Details(id, request.Version, request.Title, request.Description, request.Deadline, request.Priority));
+    [HttpPost("{id:guid}/request-assignment")]
+    public async Task<IActionResult> Request(Guid id, RequestTaskAssignmentRequest request) =>
+        Respond(await service.Request(id, request.Version, request.UserId));
+    [HttpPut("{id:guid}/assign")]
+    public async Task<IActionResult> Assign(Guid id, AssignTaskRequest request) =>
+        Respond(await service.Assign(id, request.Version, request.UserId));
+    [HttpPut("{id:guid}/unassign")]
+    public async Task<IActionResult> Unassign(Guid id, TaskVersionRequest request) =>
+        Respond(await service.Unassign(id, request.Version));
+    [HttpPut("{id:guid}/status")]
+    public async Task<IActionResult> Status(Guid id, UpdateTaskStatusRequest request) =>
+        Respond(await service.Status(id, request.Version, request.Status));
+    [HttpPut("{id:guid}/help")]
+    public async Task<IActionResult> Help(Guid id, UpdateTaskHelpRequest request) =>
+        Respond(await service.Help(id, request.Version, request.NeedsHelp));
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] int version)
     {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        if (request.UserId == Guid.Empty)
-        {
-            return BadRequest("User ID is required.");
-        }
-
-        // TODO: Check that the user belongs to the project.
-
-        if (task.AssigneeId != null)
-        {
-            return Conflict("Task is already assigned.");
-        }
-
-        if (task.Status == "Completed")
-        {
-            return Conflict("Task is already completed.");
-        }
-
-        if (task.AssignmentRequests.Contains(request.UserId))
-        {
-            return Conflict("User already requested this task.");
-        }
-
-        task.AssignmentRequests.Add(request.UserId);
-
-        return Ok(task);
-    }
-
-    // PUT /api/tasks/{id}/assign
-    // Assign a task or transfer it to another user.
-    [HttpPut("{id}/assign")]
-    public IActionResult AssignTask(
-        [FromRoute] Guid id,
-        [FromBody] AssignTaskRequest request)
-    {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        if (request.UserId == Guid.Empty)
-        {
-            return BadRequest("User ID is required.");
-        }
-
-        // TODO: Check that the user belongs to the project.
-
-        if (task.Status == "Completed")
-        {
-            return Conflict("Reopen the task before assigning it.");
-        }
-
-        // An unassigned task requires a previous assignment request.
-        if (task.AssigneeId == null &&
-            !task.AssignmentRequests.Contains(request.UserId))
-        {
-            return BadRequest("This user did not request the task.");
-        }
-
-        task.AssigneeId = request.UserId;
-        task.Status = "In Progress";
-        task.AssignmentRequests.Clear();
-
-        return Ok(task);
-    }
-
-    // PUT /api/tasks/{id}/status
-    [HttpPut("{id}/status")]
-    public IActionResult UpdateStatus(
-        [FromRoute] Guid id,
-        [FromBody] UpdateTaskStatusRequest request)
-    {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        if (request.Status != "Open" &&
-            request.Status != "In Progress" &&
-            request.Status != "Completed")
-        {
-            return BadRequest(
-                "Status must be Open, In Progress, or Completed.");
-        }
-
-        task.Status = request.Status;
-
-        return Ok(task);
-    }
-
-    // PUT /api/tasks/{id}/help
-    [HttpPut("{id}/help")]
-    public IActionResult UpdateHelpStatus(
-        [FromRoute] Guid id,
-        [FromBody] UpdateTaskHelpRequest request)
-    {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        if (!request.NeedsHelp.HasValue)
-        {
-            return BadRequest("NeedsHelp is required.");
-        }
-
-        task.NeedsHelp = request.NeedsHelp.Value;
-
-        return Ok(task);
-    }
-
-    // DELETE /api/tasks/{id}
-    [HttpDelete("{id}")]
-    public IActionResult DeleteTask([FromRoute] Guid id)
-    {
-        TaskItem? task = Tasks.FirstOrDefault(t => t.Id == id);
-
-        if (task == null)
-        {
-            return NotFound("Task not found.");
-        }
-
-        Tasks.Remove(task);
-
-        // The deletion succeeded. No response body is needed.
-        return NoContent();
-    }
-
-    // A private helper, not an API endpoint.
-    private static bool IsValidPriority(string? priority)
-    {
-        return priority == "Low" ||
-               priority == "Medium" ||
-               priority == "High";
+        if (version < 1) return BadRequest("A positive version is required.");
+        if ((await tasks.Delete(id, version)).DeletedCount > 0) return NoContent();
+        return await tasks.Get(id) is null ? NotFound("Task not found.") : Conflict("Task changed. Refresh it and try again.");
     }
 }
