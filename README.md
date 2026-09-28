@@ -15,7 +15,7 @@ For MongoDB Atlas, set the environment variable `MongoDb__ConnectionString` in t
 
 ## Demo walkthrough
 
-Create Eden and Maya, make a project as Eden, add Maya. Create an unassigned task. Switch to Maya and request it. Switch to Eden and assign Maya. Maya can mark it completed or flag it as needing help. To show conflict handling, open the same board in two browser windows and load the same task. Update it in the first window; saving the older version in the second returns HTTP 409, refreshes the board, and shows an explanation. Use two separate browser profiles or tabs and choose different demo users if desired.
+Create User1 and User2, . Create an unassigned task. Switch to Maya and request it. Switch to Eden and assign Maya. Maya can mark it completed or flag it as needing help. To show conflict handling, open the same board in two browser windows and load the same task. Update it in the first window; saving the older version in the second returns HTTP 409, refreshes the board, and shows an explanation. Use two separate browser profiles or tabs and choose different demo users if desired.
 
 ## Architecture and rules
 
