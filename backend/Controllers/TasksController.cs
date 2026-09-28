@@ -44,7 +44,7 @@ public class TasksController(TaskRepository tasks, ProjectRepository projects, T
     public async Task<IActionResult> Update(Guid id, UpdateTaskRequest request) =>
         Respond(await service.Details(id, request.Version, request.Title, request.Description, request.Deadline, request.Priority));
     [HttpPost("{id:guid}/request-assignment")]
-    public async Task<IActionResult> Request(Guid id, RequestTaskAssignmentRequest request) =>
+    public async Task<IActionResult> RequestAssignment(Guid id, RequestTaskAssignmentRequest request) =>
         Respond(await service.Request(id, request.Version, request.UserId));
     [HttpPut("{id:guid}/assign")]
     public async Task<IActionResult> Assign(Guid id, AssignTaskRequest request) =>
